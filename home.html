@@ -1,1 +1,458 @@
+import React, { useState, useEffect } from "react";
+import { base44 } from "@/api/base44Client";
+import { useQuery } from "@tanstack/react-query";
+import { Droplets, Moon, Smile, Flame, Award, TrendingUp } from "lucide-react";
+import { format, isToday, parseISO, differenceInDays } from "date-fns";
+import { toast } from "sonner";
+import { motion } from "framer-motion";
+
+import StatCard from "../components/home/StatCard";
+import StreakTracker from "../components/home/StreakTracker";
+import QuickActions from "../components/home/QuickActions";
+import MotivationalQuote from "../components/home/MotivationalQuote";
+import PointsDisplay from "../components/home/PointsDisplay";
+import BadgeCard from "../components/badges/BadgeCard";
+
+// Badges configuration
+const BADGES = [
+  {
+    id: 'streak_7',
+    name: 'Week Warrior',
+    description: 'Complete a 7-day streak',
+    icon: '🔥',
+    color: 'from-orange-400 to-red-500',
+    checkEarned: (profile) => profile.current_streak >= 7 || profile.longest_streak >= 7,
+    progress: (profile) => Math.min((profile.current_streak / 7) * 100, 100),
+    points: 100
+  },
+  {
+    id: 'streak_30',
+    name: 'Monthly Master',
+    description: 'Maintain a 30-day streak',
+    icon: '💪',
+    color: 'from-purple-400 to-pink-500',
+    checkEarned: (profile) => profile.current_streak >= 30 || profile.longest_streak >= 30,
+    progress: (profile) => Math.min((profile.current_streak / 30) * 100, 100),
+    points: 500
+  },
+  {
+    id: 'workouts_10',
+    name: 'Fitness Enthusiast',
+    description: 'Complete 10 workouts',
+    icon: '💪',
+    color: 'from-blue-400 to-cyan-500',
+    checkEarned: (profile) => profile.total_workouts >= 10,
+    progress: (profile) => Math.min((profile.total_workouts / 10) * 100, 100),
+    points: 150
+  },
+  {
+    id: 'workouts_50',
+    name: 'Workout Legend',
+    description: 'Complete 50 workouts',
+    icon: '🏆',
+    color: 'from-yellow-400 to-orange-500',
+    checkEarned: (profile) => profile.total_workouts >= 50,
+    progress: (profile) => Math.min((profile.total_workouts / 50) * 100, 100),
+    points: 1000
+  },
+  {
+    id: 'meditations_10',
+    name: 'Mindful Soul',
+    description: 'Complete 10 meditation sessions',
+    icon: '🧘',
+    color: 'from-indigo-400 to-purple-500',
+    checkEarned: (profile) => profile.total_meditations >= 10,
+    progress: (profile) => Math.min((profile.total_meditations / 10) * 100, 100),
+    points: 150
+  },
+  {
+    id: 'meditations_50',
+    name: 'Zen Master',
+    description: 'Complete 50 meditation sessions',
+    icon: '🕉️',
+    color: 'from-purple-400 to-pink-500',
+    checkEarned: (profile) => profile.total_meditations >= 50,
+    progress: (profile) => Math.min((profile.total_meditations / 50) * 100, 100),
+    points: 1000
+  },
+  {
+    id: 'breathing_20',
+    name: 'Breath Master',
+    description: 'Complete 20 breathing exercises',
+    icon: '🌬️',
+    color: 'from-cyan-400 to-teal-500',
+    checkEarned: (profile) => profile.total_breathing_sessions >= 20,
+    progress: (profile) => Math.min((profile.total_breathing_sessions / 20) * 100, 100),
+    points: 200
+  },
+  {
+    id: 'points_1000',
+    name: 'Point Collector',
+    description: 'Earn 1,000 wellness points',
+    icon: '⭐',
+    color: 'from-yellow-400 to-amber-500',
+    checkEarned: (profile) => profile.total_points >= 1000,
+    progress: (profile) => Math.min((profile.total_points / 1000) * 100, 100),
+    points: 0
+  },
+  {
+    id: 'points_5000',
+    name: 'Elite Champion',
+    description: 'Earn 5,000 wellness points',
+    icon: '👑',
+    color: 'from-amber-400 to-yellow-500',
+    checkEarned: (profile) => profile.total_points >= 5000,
+    progress: (profile) => Math.min((profile.total_points / 5000) * 100, 100),
+    points: 0
+  },
+  {
+    id: 'early_bird',
+    name: 'Early Bird',
+    description: 'Complete morning activities',
+    icon: '🌅',
+    color: 'from-pink-400 to-rose-500',
+    checkEarned: (profile) => profile.badges?.includes('early_bird'),
+    progress: () => 0,
+    points: 50
+  }
+];
+
+const POINTS_REWARDS = {
+  daily_checkin: 10,
+  workout_completed: 30,
+  meditation_completed: 25,
+  breathing_completed: 15,
+  mood_logged: 10,
+  sleep_logged: 10,
+  water_goal_reached: 20,
+  activity_logged: 15,
+  streak_bonus: 5
+};
+
+const checkNewBadges = (profile, previousProfile = {}) => {
+  const newBadges = [];
+  
+  BADGES.forEach(badge => {
+    const wasEarned = previousProfile.badges?.includes(badge.id);
+    const isNowEarned = badge.checkEarned(profile);
+    
+    if (isNowEarned && !wasEarned) {
+      newBadges.push(badge);
+    }
+  });
+  
+  return newBadges;
+};
+
+export default function Home() {
+  const [user, setUser] = useState(null);
+  const [userProfile, setUserProfile] = useState(null);
+  const [recentPoints, setRecentPoints] = useState(0);
+
+  useEffect(() => {
+    const fetchUser = async () => {
+      const currentUser = await base44.auth.me();
+      setUser(currentUser);
+      
+      const profiles = await base44.entities.UserProfile.filter({ created_by: currentUser.email });
+      if (profiles.length > 0) {
+        const profile = profiles[0];
+        setUserProfile(profile);
+        
+        // Check and update streak
+        const today = format(new Date(), 'yyyy-MM-dd');
+        if (profile.last_active_date) {
+          const daysSinceLastActive = differenceInDays(new Date(today), new Date(profile.last_active_date));
+          
+          if (daysSinceLastActive === 1) {
+            // Continue streak
+            const newStreak = (profile.current_streak || 0) + 1;
+            const updatedProfile = {
+              ...profile,
+              current_streak: newStreak,
+              longest_streak: Math.max(newStreak, profile.longest_streak || 0),
+              last_active_date: today,
+              total_points: (profile.total_points || 0) + POINTS_REWARDS.daily_checkin + (newStreak * POINTS_REWARDS.streak_bonus)
+            };
+            
+            await base44.entities.UserProfile.update(profile.id, updatedProfile);
+            setUserProfile(updatedProfile);
+            setRecentPoints(POINTS_REWARDS.daily_checkin + (newStreak * POINTS_REWARDS.streak_bonus));
+            toast.success(`🔥 ${newStreak} day streak! +${POINTS_REWARDS.daily_checkin + (newStreak * POINTS_REWARDS.streak_bonus)} points`);
+            
+            // Check for new badges
+            const newBadges = checkNewBadges(updatedProfile, profile);
+            if (newBadges.length > 0) {
+              const badgeIds = updatedProfile.badges || [];
+              const updatedBadges = [...badgeIds, ...newBadges.map(b => b.id)];
+              await base44.entities.UserProfile.update(profile.id, { 
+                badges: updatedBadges,
+                total_points: updatedProfile.total_points + newBadges.reduce((sum, b) => sum + b.points, 0)
+              });
+              newBadges.forEach(badge => {
+                toast.success(`🏆 New badge earned: ${badge.name}! +${badge.points} points`);
+              });
+            }
+          } else if (daysSinceLastActive > 1) {
+            // Streak broken
+            if (profile.current_streak > 0) {
+              toast.error('Streak broken! Start a new one today.');
+            }
+            await base44.entities.UserProfile.update(profile.id, {
+              current_streak: 1,
+              last_active_date: today,
+              total_points: (profile.total_points || 0) + POINTS_REWARDS.daily_checkin
+            });
+            setRecentPoints(POINTS_REWARDS.daily_checkin);
+          }
+        } else {
+          // First time
+          await base44.entities.UserProfile.update(profile.id, {
+            current_streak: 1,
+            longest_streak: 1,
+            last_active_date: today,
+            total_points: POINTS_REWARDS.daily_checkin
+          });
+          setRecentPoints(POINTS_REWARDS.daily_checkin);
+          toast.success(`Welcome! +${POINTS_REWARDS.daily_checkin} points`);
+        }
+      } else {
+        const newProfile = await base44.entities.UserProfile.create({
+          fitness_goal: "general_wellness",
+          experience_level: "beginner",
+          daily_water_goal: 8,
+          daily_sleep_goal: 8,
+          current_streak: 1,
+          longest_streak: 1,
+          last_active_date: format(new Date(), 'yyyy-MM-dd'),
+          total_workouts: 0,
+          total_meditations: 0,
+          total_breathing_sessions: 0,
+          total_points: POINTS_REWARDS.daily_checkin,
+          badges: [],
+          preferences: {
+            reminders_enabled: true,
+            theme: "light"
+          }
+        });
+        setUserProfile(newProfile);
+        setRecentPoints(POINTS_REWARDS.daily_checkin);
+      }
+    };
+    fetchUser();
+  }, []);
+
+  const { data: todayMood } = useQuery({
+    queryKey: ['todayMood'],
+    queryFn: async () => {
+      const moods = await base44.entities.MoodEntry.filter({ 
+        date: format(new Date(), 'yyyy-MM-dd') 
+      });
+      return moods[0];
+    },
+    initialData: null,
+  });
+
+  const { data: todayWater } = useQuery({
+    queryKey: ['todayWater'],
+    queryFn: async () => {
+      const waters = await base44.entities.WaterLog.filter({ 
+        date: format(new Date(), 'yyyy-MM-dd') 
+      });
+      return waters[0];
+    },
+    initialData: null,
+  });
+
+  const { data: todaySleep } = useQuery({
+    queryKey: ['todaySleep'],
+    queryFn: async () => {
+      const sleeps = await base44.entities.SleepLog.filter({ 
+        date: format(new Date(), 'yyyy-MM-dd') 
+      });
+      return sleeps[0];
+    },
+    initialData: null,
+  });
+
+  const { data: recentSessions } = useQuery({
+    queryKey: ['recentSessions'],
+    queryFn: async () => {
+      const workouts = await base44.entities.WorkoutSession.list('-completed_date', 10);
+      const meditations = await base44.entities.MeditationSession.list('-completed_date', 10);
+      const breathing = await base44.entities.BreathingSession.list('-completed_date', 10);
+      
+      const allSessions = [...workouts, ...meditations, ...breathing];
+      const today = allSessions.filter(s => isToday(parseISO(s.completed_date)));
+      
+      return {
+        todayCount: today.length,
+        weekCount: allSessions.length
+      };
+    },
+    initialData: { todayCount: 0, weekCount: 0 },
+  });
+
+  if (!user || !userProfile) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-violet-50 via-white to-emerald-50">
+        <motion.div
+          animate={{ rotate: 360 }}
+          transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+          className="rounded-full h-12 w-12 border-4 border-violet-600 border-t-transparent"
+        />
+      </div>
+    );
+  }
+
+  const waterGoal = userProfile.daily_water_goal || 8;
+  const waterConsumed = todayWater?.glasses || 0;
+  const waterPercentage = Math.round((waterConsumed / waterGoal) * 100);
+  
+  // Ensure userProfile.badges is an array for safety, even if it's not strictly necessary if backend ensures it.
+  const earnedBadges = BADGES.filter(badge => userProfile.badges?.includes(badge.id) || badge.checkEarned(userProfile));
+  const nextBadges = BADGES.filter(badge => !(userProfile.badges?.includes(badge.id) || badge.checkEarned(userProfile))).slice(0, 3);
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-violet-50 via-white to-emerald-50">
+      {/* Hero Section */}
+      <div className="relative overflow-hidden bg-gradient-to-br from-violet-600 via-purple-600 to-emerald-500 text-white">
+        <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjAiIGhlaWdodD0iNjAiIHZpZXdCb3g9IjAgMCA2MCA2MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48ZyBmaWxsPSJub25lIiBmaWxsLXJ1bGU9ImV2ZW5vZGQiPjxnIGZpbGw9IiNmZmYiIGZpbGwtb3BhY2l0eT0iMC4xIj48cGF0aCBkPSJNMzYgMzRjMC0yLjIxLTEuNzktNC00LTRzLTQgMS43OS00IDQgMS43OSA0IDQgNCA0LTEuNzkgNC00em0wLTEwYzAtMi4yMS0xLjc5LTQtNC00cy00IDEuNzktNCA0IDEuNzkgNCA0IDQgNC0xLjc5IDQtNHoiLz48L2c+PC9nPjwvc3ZnPg==')] opacity-20"></div>
+        
+        <div className="relative max-w-7xl mx-auto px-4 md:px-8 py-12">
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="text-center mb-8"
+          >
+            <h1 className="text-4xl md:text-6xl font-bold mb-4">
+              Welcome back, {user.full_name?.split(' ')[0] || 'friend'}! 👋
+            </h1>
+            <p className="text-xl text-white/90 mb-2">
+              {format(new Date(), 'EEEE, MMMM d, yyyy')}
+            </p>
+            <p className="text-white/80">
+              Your wellness journey continues today
+            </p>
+          </motion.div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl mx-auto">
+            <PointsDisplay points={userProfile.total_points} recentPoints={recentPoints} />
+            <StreakTracker 
+              currentStreak={userProfile.current_streak || 0}
+              longestStreak={userProfile.longest_streak || 0}
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="max-w-7xl mx-auto p-4 md:p-8">
+        {/* Daily Stats */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.2 }}
+          className="mb-8"
+        >
+          <h2 className="text-2xl font-bold text-gray-900 mb-4 flex items-center gap-2">
+            <TrendingUp className="w-6 h-6 text-violet-600" />
+            Today's Progress
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            <StatCard
+              icon={Droplets}
+              label="Water Today"
+              value={`${waterConsumed}/${waterGoal}`}
+              subtitle={`${waterPercentage}% of goal`}
+              color="blue"
+            />
+            <StatCard
+              icon={Moon}
+              label="Sleep Last Night"
+              value={todaySleep ? `${todaySleep.hours}h` : '--'}
+              subtitle={todaySleep ? todaySleep.quality : 'Not logged'}
+              color="violet"
+            />
+            <StatCard
+              icon={Smile}
+              label="Today's Mood"
+              value={todayMood ? todayMood.mood : '--'}
+              subtitle={todayMood ? `Energy: ${todayMood.energy_level}/5` : 'Not logged'}
+              color="pink"
+            />
+            <StatCard
+              icon={Flame}
+              label="Activities Today"
+              value={recentSessions.todayCount}
+              subtitle={`${recentSessions.weekCount} this week`}
+              color="orange"
+            />
+          </div>
+        </motion.div>
+
+        {/* Motivational Quote */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.3 }}
+          className="mb-8"
+        >
+          <MotivationalQuote userGoal={userProfile.fitness_goal} />
+        </motion.div>
+
+        {/* Quick Actions */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.4 }}
+          className="mb-8"
+        >
+          <h2 className="text-2xl font-bold text-gray-900 mb-4">Quick Actions</h2>
+          <QuickActions />
+        </motion.div>
+
+        {/* Badges Section */}
+        {(earnedBadges.length > 0 || nextBadges.length > 0) && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.5 }}
+          >
+            <h2 className="text-2xl font-bold text-gray-900 mb-4 flex items-center gap-2">
+              <Award className="w-6 h-6 text-amber-500" />
+              Your Achievements
+            </h2>
+            
+            {earnedBadges.length > 0 && (
+              <div className="mb-6">
+                <h3 className="text-lg font-semibold text-gray-700 mb-3">Earned Badges ({earnedBadges.length})</h3>
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+                  {earnedBadges.map(badge => (
+                    <BadgeCard key={badge.id} badge={badge} earned={true} />
+                  ))}
+                </div>
+              </div>
+            )}
+            
+            {nextBadges.length > 0 && (
+              <div>
+                <h3 className="text-lg font-semibold text-gray-700 mb-3">Next to Unlock</h3>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                  {nextBadges.map(badge => (
+                    <BadgeCard 
+                      key={badge.id} 
+                      badge={badge} 
+                      earned={false}
+                      progress={badge.progress(userProfile)}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+          </motion.div>
+        )}
+      </div>
+    </div>
+  );
+}
 
